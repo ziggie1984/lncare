@@ -19,16 +19,22 @@ const (
 	ctxKeyWaitGroup key = iota
 )
 
+type Channel struct {
+	*lnrpc.Channel
+	protectAgainstUnilateralClose bool
+}
+
 type lncare struct {
 	lnd    LndClient
 	myInfo *lnrpc.GetInfoResponse
 
-	channels     []*lnrpc.Channel
-	channelPairs map[string][2]*lnrpc.Channel
-	chanCache    map[uint64]*lnrpc.ChannelEdge
-	excludeTo    map[uint64]struct{}
-	excludeFrom  map[uint64]struct{}
-	excludeBoth  map[uint64]struct{}
+	channels         []*lnrpc.Channel
+	disabledChannels map[uint64]Channel
+	channelPairs     map[string][2]*lnrpc.Channel
+	chanCache        map[uint64]*lnrpc.ChannelEdge
+	excludeTo        map[uint64]struct{}
+	excludeFrom      map[uint64]struct{}
+	excludeBoth      map[uint64]struct{}
 }
 
 func newLncareInstance(ctx context.Context, lnd *LndClient) *lncare {
@@ -103,9 +109,10 @@ func main() {
 
 		var wg sync.WaitGroup
 		ctx = context.WithValue(ctx, ctxKeyWaitGroup, &wg)
-		wg.Add(1)
+		wg.Add(2)
 
 		lncare.DispatchChannelManager(ctx)
+		lncare.DispatchPeerManager(ctx)
 
 		wg.Wait()
 		log.Println("All routines stopped. Waiting for new connection.")

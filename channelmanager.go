@@ -17,6 +17,11 @@ import (
 
 const (
 	defaultTimeLockDelta uint32 = 144
+	defaultBaseFeeMsat   int64  = 5000
+
+	frequencyDisabler        int = 5      // 5minutes
+	frequencyHtlcSizeLimiter int = 6 * 60 // 6 hours
+
 )
 
 func parseChanPoint(s string) (*lnrpc.ChannelPoint, error) {
@@ -80,7 +85,8 @@ func (lncare *lncare) htlcSizeChanger(ctx context.Context) error {
 		for _, channel := range lncare.channels {
 			chanInfo, err := lncare.getChanInfo(ctx, channel.ChanId)
 			if err != nil {
-				return err
+				log.Printf("error fetching channel info with %s", err)
+				continue
 			}
 			nodePolicy := chanInfo.Node1Policy
 			if chanInfo.Node1Pub != lncare.myInfo.IdentityPubkey {
@@ -92,14 +98,18 @@ func (lncare *lncare) htlcSizeChanger(ctx context.Context) error {
 				return err
 			}
 
-			exponent := int64(math.Log2(float64((channel.LocalBalance - int64(channel.LocalConstraints.ChanReserveSat)) * 1000)))
-			maxHtlcSizeMsat = uint64(math.Pow(2.0, float64(exponent)))
+			if channel.LocalBalance > int64(channel.LocalConstraints.ChanReserveSat) {
+				exponent := int64(math.Log2(float64((channel.LocalBalance - int64(channel.LocalConstraints.ChanReserveSat)) * 1000)))
+				maxHtlcSizeMsat = uint64(math.Pow(2.0, float64(exponent)))
+			} else {
+				maxHtlcSizeMsat = uint64(nodePolicy.MinHtlc)
+			}
 
 			switch {
 			//Only Account for Updates which have a different Timelock or MaxHTLCMsat
-			case maxHtlcSizeMsat != nodePolicy.MaxHtlcMsat || nodePolicy.TimeLockDelta != defaultTimeLockDelta:
+			case maxHtlcSizeMsat != nodePolicy.MaxHtlcMsat || nodePolicy.TimeLockDelta != defaultTimeLockDelta || nodePolicy.FeeBaseMsat != defaultBaseFeeMsat:
 				req := &lnrpc.PolicyUpdateRequest{
-					BaseFeeMsat:   nodePolicy.FeeBaseMsat,
+					BaseFeeMsat:   defaultBaseFeeMsat,
 					TimeLockDelta: defaultTimeLockDelta,
 					MaxHtlcMsat:   maxHtlcSizeMsat,
 					FeeRatePpm:    uint32(nodePolicy.FeeRateMilliMsat),
@@ -121,9 +131,11 @@ func (lncare *lncare) htlcSizeChanger(ctx context.Context) error {
 				log.Printf("successfully updated chanpolicy for channel(%v): localbalance: %d htlcMax: %d sats => %d sats", channel.ChanId, channel.LocalBalance,
 					nodePolicy.MaxHtlcMsat/1000, maxHtlcSizeMsat/1000)
 			}
-			log.Printf("Evaluating HTLC-Limits Done")
-			time.Sleep(60 * time.Minute)
 		}
+		log.Printf("Evaluating HTLC-Limits Done")
+		log.Printf("channelDisabler Sleeping for %v minutes", frequencyHtlcSizeLimiter)
+		time.Sleep(time.Duration(frequencyHtlcSizeLimiter) * time.Minute)
+
 	}
 }
 
@@ -137,6 +149,10 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 		}
 
 		for _, channel := range lncare.channels {
+			var protectAgainstFC bool
+			if disableInfo, ok := lncare.disabledChannels[channel.ChanId]; ok {
+				protectAgainstFC = disableInfo.protectAgainstUnilateralClose
+			}
 
 			chanInfo, err := lncare.getChanInfo(ctx, channel.ChanId)
 			if err != nil {
@@ -152,10 +168,17 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 				return err
 			}
 
+			// fmt.Println(hex.EncodeToString(chanPoint.GetFundingTxidBytes()))
+			// fundingTx, err := chainhash.NewHash(chanPoint.GetFundingTxidBytes())
+			// if fundingTx.String() == "7c689dce8bfadf662090392ce518bec86796f61187876b481f2dbd889ba48bd2" {
+			// 	fmt.Println("Ignore Cyberdne")
+			// 	continue
+			// }
+
 			var action routerrpc.ChanStatusAction
 			switch {
 			//We do nothing in case the channel is enabled and its limits are above the channelreserve
-			case uint64(channel.LocalBalance) > channel.LocalConstraints.ChanReserveSat*2 && nodePolicy.Disabled && channel.Active:
+			case uint64(channel.LocalBalance) > channel.LocalConstraints.ChanReserveSat*2 && nodePolicy.Disabled && channel.Active && !protectAgainstFC:
 				action = routerrpc.ChanStatusAction_ENABLE
 				req := &routerrpc.UpdateChanStatusRequest{
 					ChanPoint: chanPoint,
@@ -168,7 +191,7 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 					log.Printf("channel(%v) enabling channel", channel.ChanId)
 				}
 
-			case uint64(channel.LocalBalance) < channel.LocalConstraints.ChanReserveSat*2 && !nodePolicy.Disabled:
+			case (uint64(channel.LocalBalance) < channel.LocalConstraints.ChanReserveSat*2 || protectAgainstFC) && !nodePolicy.Disabled:
 				action = routerrpc.ChanStatusAction_DISABLE
 				log.Printf("channel(%v) disabling channel because localbalance is too low", channel.ChanId)
 				req := &routerrpc.UpdateChanStatusRequest{
@@ -181,6 +204,7 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 
 		}
 		log.Printf("Evaluating LocalBalance Done")
-		time.Sleep(60 * time.Second)
+		log.Printf("channelDisabler Sleeping for %v minutes", frequencyDisabler)
+		time.Sleep(time.Duration(frequencyDisabler) * time.Minute)
 	}
 }
