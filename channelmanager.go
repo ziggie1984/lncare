@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultTimeLockDelta uint32 = 144
-	defaultBaseFeeMsat   int64  = 5000
+	defaultBaseFeeMsat   int64  = 0
 
 	frequencyDisabler        int = 5      // 5minutes
 	frequencyHtlcSizeLimiter int = 6 * 60 // 6 hours
