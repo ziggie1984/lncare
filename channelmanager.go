@@ -168,13 +168,6 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 				return err
 			}
 
-			// fmt.Println(hex.EncodeToString(chanPoint.GetFundingTxidBytes()))
-			// fundingTx, err := chainhash.NewHash(chanPoint.GetFundingTxidBytes())
-			// if fundingTx.String() == "7c689dce8bfadf662090392ce518bec86796f61187876b481f2dbd889ba48bd2" {
-			// 	fmt.Println("Ignore Cyberdne")
-			// 	continue
-			// }
-
 			var action routerrpc.ChanStatusAction
 			switch {
 			//We do nothing in case the channel is enabled and its limits are above the channelreserve
