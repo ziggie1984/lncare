@@ -156,7 +156,8 @@ func (lncare *lncare) channelDisabler(ctx context.Context) error {
 
 			chanInfo, err := lncare.getChanInfo(ctx, channel.ChanId)
 			if err != nil {
-				return err
+				log.Printf("failed to get channelid %v: %v \n", channel.ChanId, err)
+				continue
 			}
 			nodePolicy := chanInfo.Node1Policy
 			if chanInfo.Node1Pub != lncare.myInfo.IdentityPubkey {
