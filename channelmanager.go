@@ -18,6 +18,7 @@ import (
 const (
 	defaultTimeLockDelta uint32 = 144
 	defaultBaseFeeMsat   int64  = 0
+	defaultMinHtlcSize   uint64 = 2500_000
 
 	frequencyDisabler        int = 5      // 5minutes
 	frequencyHtlcSizeLimiter int = 6 * 60 // 6 hours
@@ -101,18 +102,30 @@ func (lncare *lncare) htlcSizeChanger(ctx context.Context) error {
 			if channel.LocalBalance > int64(channel.LocalConstraints.ChanReserveSat) {
 				exponent := int64(math.Log2(float64((channel.LocalBalance - int64(channel.LocalConstraints.ChanReserveSat)) * 1000)))
 				maxHtlcSizeMsat = uint64(math.Pow(2.0, float64(exponent)))
+				maxHtlcSizeMsat = uint64(math.Min(float64(channel.LocalConstraints.MaxPendingAmtMsat), float64(maxHtlcSizeMsat)))
 			} else {
 				maxHtlcSizeMsat = uint64(nodePolicy.MinHtlc)
 			}
 
+			minHtlcMsat := defaultMinHtlcSize
+			if maxHtlcSizeMsat < defaultMinHtlcSize {
+				minHtlcMsat = maxHtlcSizeMsat
+			}
+
 			switch {
 			//Only Account for Updates which have a different Timelock or MaxHTLCMsat
-			case maxHtlcSizeMsat != nodePolicy.MaxHtlcMsat || nodePolicy.TimeLockDelta != defaultTimeLockDelta || nodePolicy.FeeBaseMsat != defaultBaseFeeMsat:
+			case maxHtlcSizeMsat != nodePolicy.MaxHtlcMsat ||
+				nodePolicy.TimeLockDelta != defaultTimeLockDelta ||
+				nodePolicy.FeeBaseMsat != defaultBaseFeeMsat ||
+				nodePolicy.MinHtlc != int64(defaultMinHtlcSize):
+
 				req := &lnrpc.PolicyUpdateRequest{
-					BaseFeeMsat:   defaultBaseFeeMsat,
-					TimeLockDelta: defaultTimeLockDelta,
-					MaxHtlcMsat:   maxHtlcSizeMsat,
-					FeeRatePpm:    uint32(nodePolicy.FeeRateMilliMsat),
+					BaseFeeMsat:          defaultBaseFeeMsat,
+					TimeLockDelta:        defaultTimeLockDelta,
+					MaxHtlcMsat:          maxHtlcSizeMsat,
+					MinHtlcMsat:          minHtlcMsat,
+					MinHtlcMsatSpecified: true,
+					FeeRatePpm:           uint32(nodePolicy.FeeRateMilliMsat),
 				}
 
 				req.Scope = &lnrpc.PolicyUpdateRequest_ChanPoint{
@@ -128,8 +141,11 @@ func (lncare *lncare) htlcSizeChanger(ctx context.Context) error {
 					fmt.Println(protoUpdate)
 				}
 
-				log.Printf("successfully updated chanpolicy for channel(%v): localbalance: %d htlcMax: %d sats => %d sats", channel.ChanId, channel.LocalBalance,
-					nodePolicy.MaxHtlcMsat/1000, maxHtlcSizeMsat/1000)
+				log.Printf("successfully updated chanpolicy for channel(%v): localbalance: "+
+					"%d htlcMax: %d sats => %d sats, htlcMin: %d sats => %d sats minHTLC",
+					channel.ChanId, channel.LocalBalance,
+					nodePolicy.MaxHtlcMsat/1000, maxHtlcSizeMsat/1000,
+					nodePolicy.MinHtlc/1000, defaultMinHtlcSize/1000)
 			}
 		}
 		log.Printf("Evaluating HTLC-Limits Done")
